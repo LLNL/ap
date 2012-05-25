@@ -1,0 +1,341 @@
+#!/usr/bin/perl -w
+use strict;
+use Cwd;
+use File::Find;
+
+# Copyright (c) 2012, Lawrence Livermore National Security, LLC.
+# Produced at the Lawrence Livermore National Laboratory
+# Written by Adam Moody <moody20@llnl.gov>.
+# CODE-557474.
+# All rights reserved.
+# This file is part of the ap command package.
+# For details, see https://github.com/hpc/ap/
+# Please also read this file: LICENSE.TXT.
+
+# Subroutine: Print usage ===========================================
+
+sub print_usage
+{
+    print "\n";
+    print "  ap -- prints absolute path to file or directory after expanding all symlinks\n";
+    print "\n";
+    print "  Usage:  ap [-cdlrsh] <file> [file2 ...]\n";
+    print "\n";
+    print "  Options:\n";
+    print "    -c  Disable tty coloring\n";
+    print "    -d  List permissions of each component in final absolute path\n";
+    print "    -l  List all intermediate links\n";
+    print "    -r  Recursively search named directories printing broken symlinks\n";
+    print "    -s  Output for scripts\n";
+    print "    -h  Show this help screen\n";
+    print "\n";
+}
+
+# Subroutine: Scans $PATH for file in $_[0] =========================
+
+sub which
+{
+  # get the name of the item we're looking for (potential executable name)
+  my $file = $_[0];
+
+  # don't search through path if file name contains slashes
+  if ($file =~ m#/#) {
+    return "";
+  }
+
+  # split entries in path by ':' character
+  my @paths = split(":", $ENV{PATH});
+  foreach my $path (@paths) {
+    # append file name to each path to get the full candidate path
+    my $full_path = "$path/$file";
+
+    # check whether an item exists, is a file, and is executable
+    if (-e $full_path and -f $full_path and -x $full_path) {
+      # found it, return the first thing we find
+      return $full_path;
+    }
+  }
+
+  # couldn't find anything
+  return "";
+}
+
+# Process arguments =================================================
+
+# Initial values
+my $flag_l = 0; # -l List all intermediate links
+my $flag_d = 0; # -d List permissions of each component in final absolute path
+my $flag_c = 0; # -c Disable tty coloring
+my $flag_r = 0; # -r Recursively search named directories printing broken symlinks
+my $flag_s = 0; # -s Output for scripts
+my $flag_h = 0; # -c Show this help screen
+
+# Process options
+if(@ARGV and $ARGV[0] =~ /^-/) {
+  # Flag will be set on any invalid option
+  my $op_invalid = 0;
+
+  # Strip off and record each option
+  while(@ARGV and $ARGV[0] =~ /^-/) {
+    my $op = shift @ARGV;
+    my $op_valid=0;
+
+    # Allow multiple options to be specified as one group,
+    # e.g., abpath -lc <file>
+    if($op =~ /^-.*l.*/) {$flag_l = 1; $op_valid = 1;}
+    if($op =~ /^-.*d.*/) {$flag_d = 1; $op_valid = 1;}
+    if($op =~ /^-.*c.*/) {$flag_c = 1; $op_valid = 1;}
+    if($op =~ /^-.*r.*/) {$flag_r = 1; $op_valid = 1;}
+    if($op =~ /^-.*s.*/) {$flag_s = 1; $op_valid = 1;}
+    if($op =~ /^-.*h.*/) {$flag_h = 1; $op_valid = 1;}
+
+    # check whether the option was valid
+    if(not $op_valid) {
+      $op_invalid = 1;
+    }
+  }
+
+  # Print usage and exit with error on any invalid option
+  if($op_invalid) {
+    print_usage();
+    exit 1;
+  }
+}
+
+# color coding on screen, e.g., to print $text as red, $c_read$text$c_end
+# setting -c flag disables this coloring
+# from www.linuxjournal.com/article/8603
+my $c_cyan = "[0;36m";
+my $c_red  = "[1;37;41m";
+my $c_end  = "[0m";
+if ($flag_c) {
+  # turn off color coding
+  $c_cyan = "";
+  $c_red  = "";
+  $c_end  = "";
+}
+
+# print usage and exit with success if help flag is thrown
+if ($flag_h) {
+  print_usage();
+  exit 0;
+}
+
+# print usage and exit with error if no parameter is specified
+if (@ARGV < 1) {
+  print_usage();
+  exit 1;
+}
+
+# Read list of target files into params array ============================
+
+my @params = ();
+if (not $flag_r) {
+  @params = @ARGV;
+} else {
+  # with flag_r, items on the command line are directories
+  # do a recursive search for broken links in these directories
+  # we look for any file that is a symlink but does not exist (points to a missing file)
+  sub wanted { if ( -l && ! -e) { push @params, $File::Find::name; } }
+  foreach my $dir (@ARGV) {
+    chomp $dir;
+    find(\&wanted, $dir);
+  }
+}
+
+# Trace down absolute path for each target ============================
+
+my $err = 0;
+
+while (@params) {
+  my $file = shift @params;
+  
+  # Get path to file =======
+
+  # check that the file exists, according to following order:
+  #  1) user named file exactly (starts with /)
+  #  2) file is an executable in $PATH
+  #  3) file exists in the current working directory
+  if ($file !~ m#^/#) {
+    my $file_cwd = join("/", cwd, $file);
+    my $file_exe = which($file);
+    chomp $file_exe;
+    if (-e $file_exe or -l $file_exe) {
+      $file = $file_exe;
+    } elsif (-e $file_cwd or -l $file_cwd) {
+      $file = $file_cwd;
+    } else {
+      # Bail out and move on to next file, if not found
+      print "File not found: $c_red$file$c_end\n";
+      $err = 1;
+      next;
+    }
+  }
+
+  # if we still don't have an absolute path, it must be relative, so prepend the current working dir
+  if ($file !~ m#^/#) {
+    $file = join("/", cwd, $file);
+  }
+
+  # Traverse links to final absolute path =========
+  # modified version of an algorithm proposed by Randal L. Schwartz
+
+  my @suffix = split("/", $file);
+  my @prefix = shift @suffix ;  # should be leading empty string, since $file is fully qualified
+
+  # while there are any items in the suffix,
+  # shift the next item off and move it to the prefix
+  my @links = ();
+  while (@suffix) {
+    # shift off the next item
+    my $item = shift @suffix;
+
+    # skip this item if it's the current working directory or an empty string
+    if ($item eq "." or $item eq "") {
+      next;
+    }
+
+    # if we're backing up a directory, pop the last item off of the prefix
+    if ($item eq "..") {
+      if (@prefix > 1) {
+        pop @prefix;
+      }
+      next;
+    }
+
+    # determine whether the item is a symlink
+    my $link = readlink(join("/", @prefix, $item));
+    if (defined $link) {
+      # item is a symlink, add the full name to the links list
+      my $linkname = join("/", @prefix, $item, @suffix);
+      push @links, $linkname;
+
+      my $file = join("/", @prefix, $item);
+
+      # split the link into directory components,
+      # and shift off the leading blank if there is one (absolute path)
+      my @parts = split("/", $link);
+      if (@parts and $parts[0] eq "") {
+        @prefix = shift @parts;
+      }
+
+      # push the new components in front of the remaining @suffix components
+      unshift @suffix, @parts;
+
+      # add --> item to links array (unless script flag is set)
+      my $target = join("/", @prefix, @suffix);
+      if (not $flag_s) {
+        if (-e $target or -l $target) {
+          # found the target, print it in blue
+          push @links, "$c_cyan$file$c_end --> $link\n";
+        } else {
+          # failed to find the target file, print it in read and record the error
+          push @links, "$c_red$file$c_end --> $c_red$link$c_end\n";
+          $err = 1;
+
+          # we can't track this one any further, so just pull in remaining components
+          # move on to the next file
+          push @prefix, @suffix;
+          last;
+        }
+      }
+
+      # process the next item in the list of components
+      next;
+    } else {
+      # $item is just a normal file or directory within the @prefix directory,
+      # append it and move on to the next component
+      push @prefix, $item;
+      next;
+    }
+  } # end while(@suffix)
+
+  # Output =========================
+
+  # print intermediate links
+  if ($flag_l) {
+    # print each link found before final resolved path
+    if (@links) {
+      # print newline, unless this is output for a script
+      if (not $flag_s) {
+        print "\n";
+      }
+
+      my $dirlist = join("\n", @links);
+      print $dirlist;
+    }
+
+    # print final resolved path
+    my $ap = join("/", @prefix);
+    if (not -e $ap) {
+      print "\nFile not found: $c_red$ap$c_end\n"; $err = 1;
+    } else {
+      print "\n$ap\n";
+    }
+  }
+
+  # print permissions for each component of final resolved path
+  if ($flag_d) {
+    my @parts = ();
+    my @dirs = ();
+    my $baddir = "";
+    while (@prefix) {
+      # pull the front directory component from @prefix and push it on the end of @parts
+      push @parts, shift @prefix;
+
+      # skip leading empty string
+      if (@parts == 1 and $parts[0] eq "") {
+        next;
+      }
+
+      # build the directory name and check that it exists
+      my $dir = join("/", @parts);
+      if (-e $dir) {
+        # add directory to our list and go on to the next
+        push @dirs, $dir;
+      } else {
+        # directory does not exist, record missing directory and break while loop
+        $baddir = $dir;
+        last;
+      }
+    }
+
+    # print permissions of each item in our list of directories
+    my $dirlist = join(" ", @dirs);
+    print "\n", `ls -ld / $dirlist`;
+    if ($baddir) {
+      print "File not found: $c_red$baddir$c_end\n";
+      $err = 1;
+    }
+  }
+
+  if ($flag_l or $flag_d) {
+    # we handled output above for -l and -d flags, just print a final newline
+    if (not @params and not $flag_s) {
+      print "\n";
+    }
+
+    # print a trailing newline for each param in script output
+    if (@params and $flag_s) {
+      print "\n";
+    }
+  } else {
+    # for the recursive search, print top level directory we're searching in
+    if ($flag_r) {
+      print $links[0], "\n";
+    }
+
+    # build absolute path to file
+    my $ap = join("/", @prefix);
+
+    # check that file exists and print fully resolved path
+    if (-e $ap) {
+      print "$ap\n";
+    } else {
+      print "File not found: $c_red$ap$c_end\n";
+      $err = 1;
+    }
+  }
+} # while(@params)
+
+exit $err;

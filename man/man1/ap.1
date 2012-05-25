@@ -1,0 +1,91 @@
+.TH ap 1 "05/11/2006" " " "absolute path"
+.SH NAME
+ap \- prints absolute path to file or directory after expanding all symlinks
+
+.SH USAGE
+.TP
+.B ap [-cdlsh] <file> [file2 ...]
+
+.SH DESCRIPTION
+.TP
+Traverses symlink chains and prints the absolute path to the final target.
+.TP
+Searches for initial file (may be regular file, executable, or directory) in the following order:
+.RS
+.nf
+1) user specifies full path with leading '/'
+.nf
+2) checks for executable file in $PATH
+.nf
+3) checks for file in the current working directory
+.RE
+
+.SH OPTIONS
+.TP
+.BI -c
+Disable tty coloring
+.TP
+.BI -d
+List permissions of each component in final absolute path
+.TP
+.BI -l
+List all intermediate links
+.TP
+.BI -r
+Recursively search named directories printing broken symlinks
+.TP
+.BI -s
+Output for scripts (no coloring and minimal spacing and description)
+.TP
+.BI -h
+Show this help screen
+
+.SH EXAMPLES
+.TP
+(1) Print final absolute path after expanding all symlinks:
+.nf
+>> ap totalview
+/usr/global/tools/tv/toolworks/totalview.7.0.1-5-LLNL/bin/tv7
+.fi
+
+.TP
+(2) List intermediate links:
+.nf
+>>  ap -l /var/news
+
+/var/news
+/var/news --> /usr/global/docs/events/news/all/intel/linux/thunder
+
+/usr/global/docs/events/news/all/intel/linux/thunder
+.fi
+
+.TP
+(3) List permissions of each component in final absolute path:
+.nf
+>>  ap -d totalview
+
+drwxr-xr-x   27 root   root   4096 May  7 05:34 /
+drwxr-xr-x   28 root   root   4096 May 18 06:03 /usr
+drwxr-xr-x   15 root   root   4096 May 18 12:47 /usr/global
+drwxrwsr-x  115 root   grp1  12288 Apr 14 12:37 /usr/global/tools
+drwxrwxr-x    9 user1  grp1   8192 May 17 21:38 /usr/global/tools/tv
+drwxrwxr-x   80 user1  grp2  16384 May  8 17:05 /usr/global/tools/tv/toolworks
+drwxrwxr-x   20 user2  grp2   4096 Oct 31  2005 /usr/global/tools/tv/toolworks/totalview.7.0.1-5-LLNL
+drwxrwxr-x    3 user2  grp2   4096 Nov  2  2005 /usr/global/tools/tv/toolworks/totalview.7.0.1-5-LLNL/bin
+-rwxrwxr-x    2 user1  grp2  14697 Oct 18  2005 /usr/global/tools/tv/toolworks/totalview.7.0.1-5-LLNL/bin/tv7
+.fi
+
+.TP
+(4) Print any broken links in current directory and all subdirectories:
+.nf
+>>  ap -r .
+
+/home/user1/bin/dev/link4
+File not found: /home/user1/bin/dev/link3
+/home/user1/bin/dev/link5
+File not found: /home/user1/bin/dev/link3
+.fi
+
+.SH AUTHOR
+.TP
+Adam Moody <moody20@llnl.gov>
